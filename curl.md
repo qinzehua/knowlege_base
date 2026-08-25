@@ -1,5 +1,30 @@
 # Document API 测试 curl
 
+## 0. 上传文件并解析为 Markdown（创建草稿）
+
+支持格式：`pdf` / `docx` / `xlsx` / `pptx` / `txt` / `md`
+
+依赖：RustFS（`docker compose up -d rustfs`）。PDF 内嵌图会上传到 RustFS，并在正文中插入 `![](url)`；原文件也会上传，返回 `fileUrl`。
+
+```bash
+curl -s -X POST http://localhost:3000/documents/upload/parse \
+  -F 'file=@./sample.xlsx' \
+  -F 'authorId=10001' \
+  -F 'createBy=10001' \
+  -F 'tags=导入,xlsx' | jq
+```
+
+成功返回示例字段：`documentId`、`title`、`fileUrl`、`fileSize`、`fileExtension`、`contentLength`、`contentPreview`、`status`（0=草稿）。
+
+查看解析后的完整正文：
+
+```bash
+DOC_ID='替换成返回的 documentId'
+curl -s "http://localhost:3000/documents/${DOC_ID}" | jq '{id,title,status,content}'
+```
+
+---
+
 ## 1. 创建文档
 
 ```bash
