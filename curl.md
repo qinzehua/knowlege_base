@@ -85,7 +85,6 @@ curl -s -X PATCH "http://localhost:3000/documents/${DOC_ID}" \
   }' | jq
 ```
 
----
 
 ## 5. 软删除
 
