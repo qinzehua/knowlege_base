@@ -1,6 +1,9 @@
 import { NestFactory } from "@nestjs/core";
 import { ValidationPipe } from "@nestjs/common";
+import { applySystemProxy } from "./apply-system-proxy";
 import { AppModule } from "./app.module";
+
+applySystemProxy();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);

@@ -19,6 +19,7 @@ import {
   DocumentContentDocument,
 } from "./schemas/document-content.schema";
 import { RustfsService } from "../storage/rustfs.service";
+import { DocumentPipelinePublisher } from "../mq/document-pipeline.publisher";
 import { FileParserService } from "./parser/file-parser.service";
 import {
   decodeUploadFilename,
@@ -45,6 +46,7 @@ export class DocumentService {
     private readonly contentModel: Model<DocumentContentDocument>,
     private readonly fileParserService: FileParserService,
     private readonly rustfs: RustfsService,
+    private readonly pipelinePublisher: DocumentPipelinePublisher,
   ) {}
 
   /**
@@ -253,6 +255,59 @@ export class DocumentService {
       .findOne({ _id: doc.contentId, deleted: false })
       .lean();
     return { ...saved, content: contentDoc?.content ?? "" };
+  }
+
+  /**
+   * 直接发布文档（不做审核）
+   *
+   * 流程：
+   * 1. 校验文档存在且状态为草稿 / 已发布
+   * 2. 写库：status=Published，刷新 publishTime
+   * 3. 读 Mongo 正文，投递 RabbitMQ（RAG 向量化）
+   * 4. 投递失败只打日志，不回滚「已发布」状态
+   *
+   * 异步消费侧见 DocumentPipelineConsumer → PipelineOrchestrator：
+   * 分块(ChunkingService) → 嵌入 → ES(kh_chunk)
+   */
+  async publish(id: string) {
+    this.logger.log(`发布文档：documentId=${id}`);
+
+    const doc = await this.em.findOne(DocumentEntity, {
+      where: { id, deleted: false },
+    });
+    if (!doc) {
+      throw new NotFoundException(`Document ${id} not found`);
+    }
+
+    // 仅草稿 / 已发布可发布（已发布再次发布会重建索引）
+    if (
+      doc.status !== DocumentStatus.Draft &&
+      doc.status !== DocumentStatus.Published
+    ) {
+      throw new BadRequestException("当前文档状态不允许发布");
+    }
+
+    doc.status = DocumentStatus.Published;
+    doc.publishTime = new Date();
+    const saved = await this.em.save(doc);
+
+    const contentDoc = await this.contentModel
+      .findOne({ _id: doc.contentId, deleted: false })
+      .lean();
+    const content = contentDoc?.content ?? null;
+
+    // MQ 失败不影响发布成功
+    try {
+      await this.pipelinePublisher.afterPublish(saved);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `发布后管线投递失败（不影响发布）：documentId=${id}, error=${message}`,
+      );
+    }
+
+    this.logger.log(`文档发布成功：documentId=${id}`);
+    return { ...saved, content: content ?? "" };
   }
 
   /**

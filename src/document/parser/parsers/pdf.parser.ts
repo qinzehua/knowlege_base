@@ -80,7 +80,6 @@ export async function parsePdf(
             const contentType = sniffImageContentType(image.data);
             const ext = contentType === "image/jpeg" ? "jpg" : "png";
             const fileName = `pdf_img_p${page.pageNumber}_${imgIdx++}.${ext}`;
-
             try {
               const url = await options.uploadImage(
                 Buffer.from(image.data),
