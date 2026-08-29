@@ -263,12 +263,13 @@ export class DocumentService {
    * 流程：
    * 1. 校验文档存在且状态为草稿 / 已发布
    * 2. 写库：status=Published，刷新 publishTime
-   * 3. 读 Mongo 正文，投递 RabbitMQ（RAG 向量化 + Search 全文索引）
+   * 3. 读 Mongo 正文，投递 RabbitMQ（RAG / Search / KG）
    * 4. 投递失败只打日志，不回滚「已发布」状态
    *
    * 异步消费侧见 DocumentPipelineConsumer → PipelineOrchestrator：
    * - RAG：分块 → 嵌入 → ES(kh_chunk)
    * - Search：整篇快照 → ES(kh_document)
+   * - KG：分块 → 抽实体关系 → Neo4j
    */
   async publish(id: string) {
     this.logger.log(`发布文档：documentId=${id}`);
@@ -314,7 +315,7 @@ export class DocumentService {
   /**
    * 软删除文档
    * Postgres、Mongo 两侧都将 deleted 置为 true（不物理删正文），
-   * 并异步清理 ES 搜索索引与向量块。
+   * 并异步清理 ES 搜索索引、向量块与 Neo4j 图谱。
    */
   async remove(id: string) {
     const doc = await this.em.findOne(DocumentEntity, {

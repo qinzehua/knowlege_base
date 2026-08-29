@@ -3,13 +3,17 @@ import { InjectEntityManager } from "@nestjs/typeorm";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model } from "mongoose";
 import { EntityManager } from "typeorm";
-import { DocumentEntity } from "../document/entities/document.entity";
+import {
+  DocumentEntity,
+  DocumentStatus,
+} from "../document/entities/document.entity";
 import {
   DocumentContent,
   DocumentContentDocument,
 } from "../document/schemas/document-content.schema";
 import { ChunkingService } from "./chunking.service";
 import { EmbeddingService } from "./embedding.service";
+import { GraphBuildService } from "./graph-build.service";
 import { SearchIndexService } from "./search-index.service";
 import { VectorIndexService } from "./vector-index.service";
 import { PipelineDocument } from "./types/pipeline.types";
@@ -19,6 +23,7 @@ import { PipelineDocument } from "./types/pipeline.types";
  *
  * <p>RAG：分块 → Embedding → ES kh_chunk</p>
  * <p>Search：整篇快照 → ES kh_document</p>
+ * <p>KG：分块 → 抽实体关系 → Neo4j</p>
  *
  * <p>由 {@link DocumentPipelineConsumer} 在消费到 MQ 消息后调用；</p>
  * <p>本类负责「加载文档 → 调具体服务」，不直接碰 RabbitMQ。</p>
@@ -36,6 +41,7 @@ export class PipelineOrchestrator {
     private readonly embeddingService: EmbeddingService,
     private readonly vectorIndexService: VectorIndexService,
     private readonly searchIndexService: SearchIndexService,
+    private readonly graphBuildService: GraphBuildService,
   ) {}
 
   /**
@@ -98,6 +104,35 @@ export class PipelineOrchestrator {
     this.logger.warn(`忽略未支持的 Search 消息：type=${type}`);
   }
 
+  /**
+   * 处理 KG 建图消息。
+   * BUILD_*：读正文 → 分块 → 抽实体关系 → 写 Neo4j
+   * DELETE_*：删文档节点及其 chunk / 孤儿实体
+   */
+  async handleKgBuild(type: string, documentIds?: string[]) {
+    if (type === "DELETE_BY_DOC_IDS" && documentIds?.length) {
+      for (const id of documentIds) {
+        await this.graphBuildService.deleteForDocument(id);
+      }
+      return;
+    }
+
+    const docs =
+      type === "BUILD_BY_DOC_IDS" && documentIds?.length
+        ? await this.loadDocumentsByIds(documentIds)
+        : type === "BUILD_ALL"
+          ? await this.loadAllPublishedDocuments()
+          : [];
+
+    if (!docs.length) {
+      this.logger.warn(`忽略未支持或空的 KG 消息：type=${type}`);
+      return;
+    }
+
+    this.logger.log(`KG 开始建图：type=${type}, total=${docs.length}`);
+    await this.graphBuildService.buildBatch(docs);
+  }
+
   /** 单篇：分块 → 批量嵌入 → 落库 */
   private async reindexOne(doc: PipelineDocument) {
     if (!doc.content?.trim()) {
@@ -152,6 +187,21 @@ export class PipelineOrchestrator {
         where: { id, deleted: false },
       });
       if (!doc) continue;
+      const contentDoc = await this.contentModel
+        .findOne({ _id: doc.contentId, deleted: false })
+        .lean();
+      result.push(this.toPipelineDoc(doc, contentDoc?.content ?? ""));
+    }
+    return result;
+  }
+
+  /** 加载全部已发布且未删除的文档（BUILD_ALL） */
+  private async loadAllPublishedDocuments(): Promise<PipelineDocument[]> {
+    const docs = await this.em.find(DocumentEntity, {
+      where: { deleted: false, status: DocumentStatus.Published },
+    });
+    const result: PipelineDocument[] = [];
+    for (const doc of docs) {
       const contentDoc = await this.contentModel
         .findOne({ _id: doc.contentId, deleted: false })
         .lean();
