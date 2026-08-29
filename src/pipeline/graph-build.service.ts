@@ -50,7 +50,7 @@ export class GraphBuildService implements OnModuleInit, OnModuleDestroy {
     }
     const uri = this.config.get<string>("NEO4J_URI", "bolt://localhost:7687");
     const user = this.config.get<string>("NEO4J_USER", "neo4j");
-    const password = this.config.get<string>("NEO4J_PASSWORD", "password");
+    const password = this.config.get<string>("NEO4J_PASSWORD", "12345678");
     this.driver = neo4j.driver(uri, neo4j.auth.basic(user, password));
     try {
       await this.driver.verifyConnectivity();
